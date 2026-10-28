@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from backend.config import UPLOAD_DIR, BROWSER_PROFILE_DIR
+from backend.services.video_service import stage_uploaded_video
 
 app = FastAPI(
     title="Multi-Platform Social Video Publisher",
@@ -17,7 +19,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static file route for native HTML5 video streaming and preview
+app.mount("/media", StaticFiles(directory=str(UPLOAD_DIR)), name="media")
+
+
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint to verify backend server is running."""
     return {"status": "ok"}
+
+
+@app.post("/api/upload")
+async def upload_video(file: UploadFile = File(...)):
+    """Upload and stage a video file for preview and publishing."""
+    return await stage_uploaded_video(file)
+
