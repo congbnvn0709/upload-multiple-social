@@ -29,3 +29,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # Server Ports
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "5173"))
+
+# Playwright Browser Configuration (headless=False by default for human observation & anti-detection)
+HEADLESS = os.getenv("HEADLESS", "false").lower() in ("true", "1", "yes")

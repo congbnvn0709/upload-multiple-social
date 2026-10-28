@@ -1,5 +1,6 @@
 import inspect
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import os
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -13,6 +14,11 @@ from backend.services.session_service import (
     LOGIN_URLS,
     get_account_status,
     open_login_window,
+)
+from backend.services.publisher import (
+    PublishRequest,
+    manager,
+    run_publishing_pipeline,
 )
 
 app = FastAPI(
@@ -76,5 +82,42 @@ async def open_login(payload: OpenLoginRequest):
         )
     open_login_window(platform)
     return {"status": "opened", "platform": platform}
+
+
+@app.post("/api/publish")
+async def publish_video(payload: PublishRequest, background_tasks: BackgroundTasks):
+    """
+    Validates publishing request and starts background sequential pipeline.
+    """
+    if not os.path.exists(payload.video_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video file not found at path: {payload.video_path}",
+        )
+
+    enabled_platforms = [
+        plat for plat, config in payload.platforms.items() if config.enabled
+    ]
+
+    background_tasks.add_task(run_publishing_pipeline, payload)
+    return {
+        "status": "queued",
+        "platforms": enabled_platforms,
+    }
+
+
+@app.websocket("/ws/logs")
+async def websocket_logs(websocket: WebSocket):
+    """
+    Real-time log streaming WebSocket endpoint for publishing events.
+    """
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive and listen for client ping or close
+            await websocket.receive_text()
+    except (WebSocketDisconnect, Exception):
+        manager.disconnect(websocket)
+
 
 
