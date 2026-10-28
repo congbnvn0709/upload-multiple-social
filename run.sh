@@ -67,6 +67,16 @@ echo "[+] Launching React Vite frontend on http://localhost:5173..."
 (cd "$PROJECT_ROOT/frontend" && npm run dev) &
 FRONTEND_PID=$!
 
+# 8. Open Browser Window
+(
+    sleep 2
+    if command -v open >/dev/null 2>&1; then
+        open "http://localhost:5173"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "http://localhost:5173"
+    fi
+) &
+
 echo "=========================================================="
 echo " Application running at: http://localhost:5173"
 echo " API Docs available at:  http://localhost:8000/docs"
