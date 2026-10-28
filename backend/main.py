@@ -1,8 +1,13 @@
+import inspect
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.config import UPLOAD_DIR, BROWSER_PROFILE_DIR
 from backend.services.video_service import stage_uploaded_video
+from backend.services.ai_service import (
+    GenerateCaptionsRequest,
+    generate_captions_for_topic,
+)
 
 app = FastAPI(
     title="Multi-Platform Social Video Publisher",
@@ -33,4 +38,13 @@ async def health_check():
 async def upload_video(file: UploadFile = File(...)):
     """Upload and stage a video file for preview and publishing."""
     return await stage_uploaded_video(file)
+
+
+@app.post("/api/ai/generate")
+async def generate_captions(payload: GenerateCaptionsRequest):
+    """Generate platform-tailored captions, hashtags, and titles for a video topic."""
+    result = generate_captions_for_topic(payload.topic)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
