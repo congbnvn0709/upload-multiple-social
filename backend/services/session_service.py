@@ -142,7 +142,7 @@ def _run_browser(platform: str, headless: bool, profile_dir: Path):
 
             # Keep window open until user closes browser or context closes
             try:
-                context.wait_for_event("close")
+                context.wait_for_event("close", timeout=0)
             except Exception:
                 pass
             finally:

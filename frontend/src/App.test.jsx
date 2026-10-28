@@ -93,4 +93,23 @@ describe('Studio Split-Screen UI (App)', () => {
     });
     expect(screen.getByText(/Nhật Ký Trực Tiếp \(Live Logs\)/i)).toBeInTheDocument();
   });
+
+  it('shows Page ID input field when Facebook Fanpage target is selected', async () => {
+    await act(async () => {
+      render(<App />);
+    });
+    const fanpageRadio = screen.getByRole('radio', { name: /Fanpage/i });
+    expect(fanpageRadio).toBeInTheDocument();
+
+    // Page ID input should not be visible before selecting Fanpage
+    expect(screen.queryByPlaceholderText(/Ví dụ: myfanpage/i)).not.toBeInTheDocument();
+
+    // Select Fanpage
+    await act(async () => {
+      fanpageRadio.click();
+    });
+
+    // Page ID input should now appear
+    expect(screen.getByPlaceholderText(/Ví dụ: myfanpage/i)).toBeInTheDocument();
+  });
 });

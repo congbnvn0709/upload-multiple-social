@@ -26,16 +26,24 @@ class FacebookUploader(BaseUploader):
     ) -> bool:
         try:
             target = metadata.get("target", "profile").lower()
-            page_id = metadata.get("page_id", "")
+            page_id = (metadata.get("page_id") or "").strip()
 
-            if target == "fanpage" and page_id:
-                url = f"https://www.facebook.com/{page_id}/reels_composer"
-                self.log(f"Navigating to Facebook Fanpage Reels composer: {url}", "info", log_callback)
+            if target == "fanpage":
+                if page_id:
+                    url = f"https://www.facebook.com/{page_id}/reels_composer"
+                    self.log(f"Navigating to Facebook Fanpage Reels composer: {url}", "info", log_callback)
+                else:
+                    url = "https://business.facebook.com/latest/reels_composer"
+                    self.log(f"Navigating to Facebook Fanpage Reels composer (Business Suite): {url}", "info", log_callback)
             else:
                 url = self.PROFILE_REELS_URL
                 self.log(f"Navigating to Facebook Profile Reels creator: {url}", "info", log_callback)
 
             await page.goto(url, wait_until="domcontentloaded")
+
+            if self.check_login_redirect(page, "facebook", log_callback):
+                await self.capture_error_screenshot(page, "facebook")
+                return False
 
             self.log(f"Attaching video file: {video_path}", "info", log_callback)
             file_input_selectors = [
@@ -113,5 +121,7 @@ class FacebookUploader(BaseUploader):
             return True
 
         except Exception as e:
+            self.check_login_redirect(page, "facebook", log_callback)
+            await self.capture_error_screenshot(page, "facebook")
             self.log(f"Facebook upload failed: {str(e)}", "error", log_callback)
             return False

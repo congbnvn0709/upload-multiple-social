@@ -28,6 +28,10 @@ class TikTokUploader(BaseUploader):
             self.log("Navigating to TikTok Creator Center upload page...", "info", log_callback)
             await page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
 
+            if self.check_login_redirect(page, "tiktok", log_callback):
+                await self.capture_error_screenshot(page, "tiktok")
+                return False
+
             self.log("Locating file input...", "info", log_callback)
             file_input_selectors = [
                 "input[type='file']",
@@ -103,5 +107,7 @@ class TikTokUploader(BaseUploader):
             return True
 
         except Exception as e:
+            self.check_login_redirect(page, "tiktok", log_callback)
+            await self.capture_error_screenshot(page, "tiktok")
             self.log(f"TikTok upload failed: {str(e)}", "error", log_callback)
             return False

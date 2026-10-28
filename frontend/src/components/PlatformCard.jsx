@@ -100,8 +100,8 @@ export default function PlatformCard({ platform, config, onChange }) {
 
         {/* Facebook Specific: Target Radio */}
         {platform.id === 'facebook' && (
-          <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/80">
-            <span className="text-xs font-medium text-slate-300 block mb-2">
+          <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/80 space-y-2">
+            <span className="text-xs font-medium text-slate-300 block mb-1">
               Nơi đăng Facebook:
             </span>
             <div className="flex items-center gap-4">
@@ -130,6 +130,21 @@ export default function PlatformCard({ platform, config, onChange }) {
                 Fanpage
               </label>
             </div>
+            {config.target === 'fanpage' && (
+              <div className="pt-1">
+                <label className="text-[11px] font-medium text-slate-400 block mb-1">
+                  Page ID hoặc Page username (tùy chọn):
+                </label>
+                <input
+                  type="text"
+                  value={config.page_id || ''}
+                  onChange={(e) => updateField('page_id', e.target.value)}
+                  placeholder="Ví dụ: myfanpage hoặc 123456789 (để trống nếu dùng Business Suite)..."
+                  disabled={!isEnabled}
+                  className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                />
+              </div>
+            )}
           </div>
         )}
 

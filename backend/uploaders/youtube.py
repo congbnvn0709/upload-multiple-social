@@ -28,6 +28,10 @@ class YouTubeUploader(BaseUploader):
             self.log("Navigating to YouTube Studio...", "info", log_callback)
             await page.goto(self.STUDIO_URL, wait_until="domcontentloaded")
 
+            if self.check_login_redirect(page, "youtube", log_callback):
+                await self.capture_error_screenshot(page, "youtube")
+                return False
+
             self.log("Opening YouTube upload dialog...", "info", log_callback)
             create_buttons = [
                 "#create-icon",
@@ -190,5 +194,7 @@ class YouTubeUploader(BaseUploader):
             return True
 
         except Exception as e:
+            self.check_login_redirect(page, "youtube", log_callback)
+            await self.capture_error_screenshot(page, "youtube")
             self.log(f"YouTube upload failed: {str(e)}", "error", log_callback)
             return False

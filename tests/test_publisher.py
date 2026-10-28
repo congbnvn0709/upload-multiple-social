@@ -189,3 +189,35 @@ async def test_publishing_pipeline_continues_on_failure(tmp_path):
             if call.kwargs.get("status") == "error" or (len(call.args) > 1 and call.args[1] == "error")
         ]
         assert len(error_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_publishing_pipeline_handles_browser_lock(tmp_path):
+    test_video = tmp_path / "sample.mp4"
+    test_video.write_bytes(b"video bytes")
+
+    req = PublishRequest(
+        video_path=str(test_video),
+        platforms={"tiktok": PlatformConfig(enabled=True, caption="Caption 1")},
+    )
+
+    mock_pw = AsyncMock()
+    mock_pw.chromium.launch_persistent_context = AsyncMock(
+        side_effect=Exception("ProcessSingleton lock error")
+    )
+
+    with patch("backend.services.publisher.async_playwright") as mock_apw, \
+         patch("backend.services.publisher.manager.broadcast_log", new_callable=AsyncMock) as mock_broadcast:
+        mock_apw.return_value.__aenter__.return_value = mock_pw
+
+        from backend.services.publisher import run_publishing_pipeline
+        await run_publishing_pipeline(req)
+
+        # Confirm graceful error log broadcasted
+        lock_calls = [
+            call for call in mock_broadcast.call_args_list
+            if "Không thể khởi động trình duyệt" in str(call)
+        ]
+        assert len(lock_calls) == 1
+        assert lock_calls[0].kwargs.get("status") == "error" or "error" in str(lock_calls[0])
+

@@ -38,7 +38,22 @@ async def test_base_uploader_type_humanized():
 
     await uploader.type_humanized(mock_page, "input#test", "hello", min_delay=0.001, max_delay=0.002)
     mock_locator.click.assert_awaited_once()
-    assert mock_page.keyboard.press.await_count == 5
+    assert mock_page.keyboard.insert_text.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_type_humanized_vietnamese():
+    uploader = TikTokUploader()
+    mock_page = AsyncMock()
+    mock_locator = AsyncMock()
+    mock_page.locator = MagicMock(return_value=mock_locator)
+
+    vietnamese_str = "Xin chào Việt Nam! 🎬 #tintức #côngnghệ"
+    await uploader.type_humanized(mock_page, "input#test", vietnamese_str, min_delay=0.0001, max_delay=0.0002)
+    mock_locator.click.assert_awaited_once()
+    assert mock_page.keyboard.insert_text.await_count == len(vietnamese_str)
+    inserted_chars = "".join([call.args[0] for call in mock_page.keyboard.insert_text.await_args_list])
+    assert inserted_chars == vietnamese_str
 
 
 @pytest.mark.asyncio
@@ -239,4 +254,51 @@ async def test_uploader_error_handling():
     assert result is False
     assert any("failed" in msg.lower() for msg, s in logs)
     assert any(s == "error" for msg, s in logs)
+    mock_page.screenshot.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_facebook_uploader_mock_fanpage_fallback_without_page_id():
+    uploader = FacebookUploader()
+    mock_page = AsyncMock()
+    mock_file_input = AsyncMock()
+    mock_caption_box = AsyncMock()
+    mock_publish_button = AsyncMock()
+
+    def mock_locator(selector):
+        if "input[type='file']" in selector:
+            return mock_file_input
+        elif "contenteditable" in selector:
+            return mock_caption_box
+        elif "Publish" in selector or "Đăng" in selector:
+            return mock_publish_button
+        return AsyncMock()
+
+    mock_page.locator = MagicMock(side_effect=mock_locator)
+
+    logs = []
+    metadata = {
+        "target": "fanpage",
+        "page_id": "",
+        "caption": "Fanpage video without page_id",
+        "hashtags": ["#page"],
+    }
+
+    result = await uploader.upload(mock_page, "/tmp/test.mp4", metadata, log_callback=lambda m, s="info": logs.append((m, s)))
+    assert result is True
+    assert any("business.facebook.com/latest/reels_composer" in call.args[0] for call in mock_page.goto.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_uploader_login_redirect_detected():
+    uploader = TikTokUploader()
+    mock_page = AsyncMock()
+    mock_page.url = "https://www.tiktok.com/login?redirect_url=creator-center"
+
+    logs = []
+    result = await uploader.upload(mock_page, "/tmp/test.mp4", {}, log_callback=lambda m, s="info": logs.append((m, s)))
+    assert result is False
+    assert any("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại" in msg for msg, s in logs)
+    mock_page.screenshot.assert_awaited()
+
 

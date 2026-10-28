@@ -28,6 +28,10 @@ class ThreadsUploader(BaseUploader):
             self.log("Navigating to Threads (threads.net)...", "info", log_callback)
             await page.goto(self.BASE_URL, wait_until="domcontentloaded")
 
+            if self.check_login_redirect(page, "threads", log_callback):
+                await self.capture_error_screenshot(page, "threads")
+                return False
+
             self.log("Opening new thread composer...", "info", log_callback)
             composer_triggers = [
                 "svg[aria-label='Create']",
@@ -97,5 +101,7 @@ class ThreadsUploader(BaseUploader):
             return True
 
         except Exception as e:
+            self.check_login_redirect(page, "threads", log_callback)
+            await self.capture_error_screenshot(page, "threads")
             self.log(f"Threads upload failed: {str(e)}", "error", log_callback)
             return False

@@ -59,7 +59,7 @@ trap cleanup SIGINT SIGTERM EXIT
 
 # 6. Launch Backend Server
 echo "[+] Launching FastAPI backend on http://localhost:8000..."
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir backend &
 BACKEND_PID=$!
 
 # 7. Launch Frontend Server

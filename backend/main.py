@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import os
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -55,7 +56,7 @@ async def upload_video(file: UploadFile = File(...)):
 @app.post("/api/ai/generate")
 async def generate_captions(payload: GenerateCaptionsRequest):
     """Generate platform-tailored captions, hashtags, and titles for a video topic."""
-    result = generate_captions_for_topic(payload.topic)
+    result = await asyncio.to_thread(generate_captions_for_topic, payload.topic)
     if inspect.isawaitable(result):
         result = await result
     return result
@@ -68,7 +69,7 @@ class OpenLoginRequest(BaseModel):
 @app.get("/api/accounts/status")
 async def get_accounts_status():
     """Retrieve authentication status across supported social platforms."""
-    return get_account_status()
+    return await asyncio.to_thread(get_account_status)
 
 
 @app.post("/api/accounts/open-login")

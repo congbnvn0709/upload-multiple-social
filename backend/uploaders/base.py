@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import inspect
 import logging
 import random
@@ -7,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from unittest.mock import AsyncMock, MagicMock
 
 from playwright.async_api import Locator, Page
+
+from backend.config import LOGS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +102,58 @@ class BaseUploader(ABC):
             if min_delay > 0:
                 delay = random.uniform(min_delay, max_delay)
                 await asyncio.sleep(delay)
-            press_res = page.keyboard.press(char)
-            if inspect.isawaitable(press_res):
-                await press_res
+            insert_res = page.keyboard.insert_text(char)
+            if inspect.isawaitable(insert_res):
+                await insert_res
+
+    async def capture_error_screenshot(self, page: Page, platform: str) -> Optional[str]:
+        """
+        Captures a screenshot on failure and saves it to LOGS_DIR / f"{platform}_error_{timestamp}.png".
+        """
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_path = LOGS_DIR / f"{platform}_error_{timestamp}.png"
+            if hasattr(page, "screenshot"):
+                res = page.screenshot(path=str(screenshot_path))
+                if inspect.isawaitable(res):
+                    await res
+                return str(screenshot_path)
+        except Exception as e:
+            logger.warning(f"Failed to capture error screenshot for {platform}: {e}")
+        return None
+
+    def check_login_redirect(
+        self,
+        page: Page,
+        platform: str = "",
+        log_callback: Optional[Callable] = None,
+    ) -> bool:
+        """
+        Checks if page URL redirected to a login page (e.g. tiktok.com/login, facebook.com/login).
+        If so, logs: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại'.
+        """
+        try:
+            url_val = getattr(page, "url", None)
+            url = url_val if isinstance(url_val, str) else ""
+            if not url:
+                return False
+            url_lower = url.lower()
+            login_patterns = [
+                "/login",
+                "/signin",
+                "accounts.google.com",
+                "servicelogin",
+                "tiktok.com/login",
+                "facebook.com/login",
+                "threads.net/login",
+            ]
+            if any(p in url_lower for p in login_patterns):
+                self.log("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại", "error", log_callback)
+                return True
+        except Exception:
+            pass
+        return False
 
     async def safe_click(
         self,

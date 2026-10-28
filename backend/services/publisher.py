@@ -20,6 +20,7 @@ class PlatformConfig(BaseModel):
     description: Optional[str] = ""  # For YouTube
     tags: Optional[List[str]] = Field(default_factory=list)  # For YouTube
     target: Optional[str] = "profile"  # For Facebook ("profile" or "fanpage")
+    page_id: Optional[str] = ""  # For Facebook Fanpage
     visibility: Optional[str] = "public"  # For YouTube
 
 
@@ -104,15 +105,24 @@ async def run_publishing_pipeline(request: PublishRequest):
     )
 
     async with async_playwright() as pw:
-        context = await pw.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_PROFILE_DIR),
-            headless=HEADLESS,
-            viewport={"width": 1280, "height": 800},
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ],
-        )
+        try:
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(BROWSER_PROFILE_DIR),
+                headless=HEADLESS,
+                viewport={"width": 1280, "height": 800},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                ],
+            )
+        except Exception as e:
+            logger.error(f"Failed to launch browser context: {e}")
+            await manager.broadcast_log(
+                platform="system",
+                status="error",
+                message="Không thể khởi động trình duyệt (.browser_profile đang bị khóa hoặc bận). Hãy đóng các cửa sổ trình duyệt đang mở và thử lại.",
+            )
+            return
 
         try:
             for platform_name, config in enabled_platforms:

@@ -24,6 +24,7 @@ export default function App() {
       caption: '',
       hashtags: [],
       target: 'profile', // 'profile' or 'fanpage'
+      page_id: '',
     },
     youtube: {
       enabled: true,
