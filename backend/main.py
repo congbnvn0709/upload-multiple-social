@@ -1,12 +1,18 @@
 import inspect
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from backend.config import UPLOAD_DIR, BROWSER_PROFILE_DIR
 from backend.services.video_service import stage_uploaded_video
 from backend.services.ai_service import (
     GenerateCaptionsRequest,
     generate_captions_for_topic,
+)
+from backend.services.session_service import (
+    LOGIN_URLS,
+    get_account_status,
+    open_login_window,
 )
 
 app = FastAPI(
@@ -47,4 +53,28 @@ async def generate_captions(payload: GenerateCaptionsRequest):
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+class OpenLoginRequest(BaseModel):
+    platform: str
+
+
+@app.get("/api/accounts/status")
+async def get_accounts_status():
+    """Retrieve authentication status across supported social platforms."""
+    return get_account_status()
+
+
+@app.post("/api/accounts/open-login")
+async def open_login(payload: OpenLoginRequest):
+    """Launch persistent headed browser window for interactive account login."""
+    platform = payload.platform.strip().lower()
+    if platform not in LOGIN_URLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported platform '{payload.platform}'. Supported platforms: {', '.join(LOGIN_URLS.keys())}",
+        )
+    open_login_window(platform)
+    return {"status": "opened", "platform": platform}
+
 
