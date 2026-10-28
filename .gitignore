@@ -1,1 +1,10 @@
 .superpowers/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+temp_uploads/
+.browser_profile/
+logs/
+.env
