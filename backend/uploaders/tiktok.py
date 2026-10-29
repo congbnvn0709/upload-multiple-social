@@ -44,12 +44,9 @@ class TikTokUploader(BaseUploader):
         for sel in dismiss_selectors:
             try:
                 cand = page.locator(sel).first
-                cnt = await cand.count() if inspect.isawaitable(getattr(cand, "count", None)) else (cand.count() if hasattr(cand, "count") else 0)
-                if cnt > 0:
-                    vis = await cand.is_visible() if inspect.isawaitable(getattr(cand, "is_visible", None)) else True
-                    if vis:
-                        await cand.click(timeout=1000)
-                        await asyncio.sleep(0.3)
+                if await self.element_count(cand) > 0 and await self.element_is_visible(cand):
+                    await cand.click(timeout=1000)
+                    await asyncio.sleep(0.3)
             except Exception:
                 pass
 
@@ -96,11 +93,7 @@ class TikTokUploader(BaseUploader):
                 for frame in page.frames:
                     try:
                         cand = frame.locator("input[type='file']").first
-                        cnt = 1
-                        if hasattr(cand, "count"):
-                            cnt_val = cand.count()
-                            cnt = await cnt_val if inspect.isawaitable(cnt_val) else cnt_val
-                        if cnt > 0:
+                        if await self.element_count(cand) > 0:
                             file_input = cand
                             break
                     except Exception:
@@ -127,14 +120,10 @@ class TikTokUploader(BaseUploader):
                     await asyncio.sleep(1)
                     await self._dismiss_popups_and_tooltips(page)
                     try:
-                        # Check if Post button is present and not disabled
+                        # Check if Post button is present and enabled
                         post_cand = page.locator("button:text-is('Post'), button:text-is('Đăng'), button[data-e2e='post_video_button'], button:has-text('Post')").first
-                        cnt = await post_cand.count() if hasattr(post_cand, "count") else 0
-                        if cnt > 0:
-                            is_disabled = await post_cand.get_attribute("disabled") if hasattr(post_cand, "get_attribute") else None
-                            aria_disabled = await post_cand.get_attribute("aria-disabled") if hasattr(post_cand, "get_attribute") else None
-                            if is_disabled is None and aria_disabled != "true":
-                                break
+                        if await self.element_count(post_cand) > 0 and await self.element_is_enabled(post_cand):
+                            break
                     except Exception:
                         pass
 
@@ -193,8 +182,13 @@ class TikTokUploader(BaseUploader):
 
             self.log("Đang bấm nút Đăng (Post) video lên TikTok...", "info", log_callback)
             post_selectors = [
+                # Nút Post nằm cùng container với Save draft (chính xác tuyệt đối theo TikTok Studio)
+                "div:has(> button:has-text('Save draft')) >> button:has-text('Post')",
+                "div:has(> button:has-text('Lưu bản nháp')) >> button:has-text('Đăng')",
                 "button:text-is('Post')",
                 "button:text-is('Đăng')",
+                "//button[normalize-space(text())='Post']",
+                "//button[normalize-space(text())='Đăng']",
                 "button[data-e2e='post_video_button']",
                 "button:has-text('Post')",
                 "button:has-text('Đăng')",
@@ -206,50 +200,69 @@ class TikTokUploader(BaseUploader):
             for p_sel in post_selectors:
                 try:
                     cand = page.locator(p_sel).first
-                    cnt = 1
-                    if hasattr(cand, "count"):
-                        cnt_val = cand.count()
-                        cnt = await cnt_val if inspect.isawaitable(cnt_val) else cnt_val
-                    if cnt > 0:
+                    if await self.element_count(cand) > 0:
+                        is_vis = await self.element_is_visible(cand)
+                        is_enb = await self.element_is_enabled(cand)
+                        self.log(f"Tìm thấy nút ({p_sel}): visible={is_vis}, enabled={is_enb}", "info", log_callback)
                         if hasattr(cand, "scroll_into_view_if_needed"):
                             res = cand.scroll_into_view_if_needed()
                             if inspect.isawaitable(res):
                                 await res
+
                         try:
                             res = cand.click(timeout=5000)
                             if inspect.isawaitable(res):
                                 await res
                             post_clicked = True
+                            self.log(f"Đã click nút Post thành công bằng selector: {p_sel}", "info", log_callback)
                             break
-                        except Exception:
+                        except Exception as e:
+                            self.log(f"Click bình thường thất bại ({e}), thử force click...", "debug", log_callback)
                             res = cand.click(force=True, timeout=3000)
                             if inspect.isawaitable(res):
                                 await res
                             post_clicked = True
+                            self.log(f"Đã force click nút Post bằng selector: {p_sel}", "info", log_callback)
                             break
-                except Exception:
+                except Exception as ex:
+                    logger.debug("Error checking selector %s: %s", p_sel, ex)
                     continue
 
+            # Fallback JavaScript click directly on button with text 'Post'
             if not post_clicked and not is_mock:
-                # Fallback to safe_click
-                await self.safe_click(page, post_selectors, timeout=5000)
+                self.log("Thử click nút Post thông qua JavaScript evaluate...", "info", log_callback)
+                try:
+                    js_clicked = await page.evaluate("""() => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const postBtn = buttons.find(b => b.innerText.trim() === 'Post' || b.innerText.trim() === 'Đăng');
+                        if (postBtn) {
+                            postBtn.scrollIntoView();
+                            postBtn.click();
+                            return true;
+                        }
+                        return false;
+                    }""")
+                    if js_clicked:
+                        post_clicked = True
+                        self.log("JavaScript click nút Post thành công!", "info", log_callback)
+                except Exception as js_err:
+                    self.log(f"JavaScript click thất bại: {js_err}", "warning", log_callback)
 
             # Handle possible confirmation popups (e.g. "Post anyway" for copyright or guidelines)
+            confirm_selectors = [
+                "button:has-text('Post anyway')",
+                "button:has-text('Vẫn đăng')",
+                "button:has-text('Confirm')",
+                "button:has-text('Xác nhận')",
+                "button:has-text('Continue to post')",
+                "button:has-text('Tiếp tục đăng')",
+            ]
             if not is_mock:
-                await asyncio.sleep(1)
-                confirm_selectors = [
-                    "button:has-text('Post anyway')",
-                    "button:has-text('Vẫn đăng')",
-                    "button:has-text('Confirm')",
-                    "button:has-text('Xác nhận')",
-                    "button:has-text('Continue to post')",
-                    "button:has-text('Tiếp tục đăng')",
-                ]
+                await asyncio.sleep(1.5)
                 for c_sel in confirm_selectors:
                     try:
                         c_cand = page.locator(c_sel).first
-                        cnt = await c_cand.count() if hasattr(c_cand, "count") else 0
-                        if cnt > 0:
+                        if await self.element_count(c_cand) > 0 and await self.element_is_visible(c_cand):
                             self.log(f"Đang xác nhận hộp thoại xuất bản ({c_sel})...", "info", log_callback)
                             await c_cand.click(timeout=3000)
                             break
@@ -258,15 +271,17 @@ class TikTokUploader(BaseUploader):
 
             # Wait for post submission confirmation
             if not is_mock:
-                self.log("Đang chờ xác nhận xuất bản từ TikTok...", "info", log_callback)
+                self.log("Đang chờ TikTok xử lý và xác nhận xuất bản video hoàn tất...", "info", log_callback)
                 success_confirmed = False
-                for _ in range(30):
+                for _ in range(35):
                     await asyncio.sleep(1)
                     try:
                         current_url = getattr(page, "url", "")
                         if "/content" in current_url or "/manage" in current_url:
+                            self.log(f"Đã phát hiện URL chuyển hướng thành công: {current_url}", "info", log_callback)
                             success_confirmed = True
                             break
+
                         indicators = [
                             "text='Your video has been uploaded'",
                             "text='Video của bạn đã được tải lên'",
@@ -277,15 +292,23 @@ class TikTokUploader(BaseUploader):
                             "text='Tải lên video khác'",
                             "button:has-text('Manage your posts')",
                             "button:has-text('Quản lý bài viết')",
+                            "div:has-text('Uploaded')",
                         ]
                         for ind in indicators:
                             ind_loc = page.locator(ind).first
-                            cnt = await ind_loc.count() if hasattr(ind_loc, "count") else 0
-                            if cnt > 0:
+                            if await self.element_count(ind_loc) > 0 and await self.element_is_visible(ind_loc):
+                                self.log(f"Đã phát hiện thông báo xác nhận: {ind}", "info", log_callback)
                                 success_confirmed = True
                                 break
                         if success_confirmed:
                             break
+
+                        # Check if a delayed "Post anyway" confirmation popped up
+                        for c_sel in confirm_selectors:
+                            c_cand = page.locator(c_sel).first
+                            if await self.element_count(c_cand) > 0 and await self.element_is_visible(c_cand):
+                                self.log(f"Phát hiện hộp thoại xác nhận ({c_sel}), đang click...", "info", log_callback)
+                                await c_cand.click(timeout=2000)
                     except Exception:
                         pass
 
@@ -299,7 +322,8 @@ class TikTokUploader(BaseUploader):
                     return False
 
                 # Allow a few seconds for pending background network sync before closing browser
-                await asyncio.sleep(3)
+                self.log("Chờ đồng bộ mạng hoàn tất trước khi hoàn thành...", "info", log_callback)
+                await asyncio.sleep(4)
 
             self.log("TikTok video post initiated successfully!", "success", log_callback)
             return True

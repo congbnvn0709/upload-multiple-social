@@ -123,6 +123,60 @@ class BaseUploader(ABC):
             logger.warning(f"Failed to capture error screenshot for {platform}: {e}")
         return None
 
+    async def element_count(self, locator: Any) -> int:
+        """Safely retrieves count of elements matching a locator across Playwright async and mocks."""
+        if locator is None:
+            return 0
+        if not hasattr(locator, "count"):
+            return 1
+        try:
+            cnt = locator.count()
+            if inspect.isawaitable(cnt):
+                cnt = await cnt
+            return int(cnt) if isinstance(cnt, (int, float)) else 0
+        except Exception:
+            return 0
+
+    async def element_is_visible(self, locator: Any) -> bool:
+        """Safely checks if an element is visible across Playwright async and mocks."""
+        if locator is None:
+            return False
+        if not hasattr(locator, "is_visible"):
+            return True
+        try:
+            res = locator.is_visible()
+            if inspect.isawaitable(res):
+                res = await res
+            return bool(res)
+        except Exception:
+            return False
+
+    async def element_is_enabled(self, locator: Any) -> bool:
+        """Safely checks if an element is enabled across Playwright async and mocks."""
+        if locator is None:
+            return False
+        if hasattr(locator, "is_enabled"):
+            try:
+                res = locator.is_enabled()
+                if inspect.isawaitable(res):
+                    res = await res
+                return bool(res)
+            except Exception:
+                pass
+        if hasattr(locator, "get_attribute"):
+            try:
+                dis = locator.get_attribute("disabled")
+                if inspect.isawaitable(dis):
+                    dis = await dis
+                aria_dis = locator.get_attribute("aria-disabled")
+                if inspect.isawaitable(aria_dis):
+                    aria_dis = await aria_dis
+                if dis is not None or aria_dis == "true":
+                    return False
+            except Exception:
+                pass
+        return True
+
     def check_login_redirect(
         self,
         page: Page,
