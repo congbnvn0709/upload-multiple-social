@@ -21,6 +21,23 @@ class TikTokUploader(BaseUploader):
     CREATOR_UPLOAD_URL = "https://www.tiktok.com/creator-center/upload"
     FALLBACK_UPLOAD_URL = "https://www.tiktok.com/upload"
 
+    CONFIRM_POPUP_SELECTORS = [
+        "button:text-is('Post now')",
+        "button:has-text('Post now')",
+        "button:text-is('Đăng ngay')",
+        "button:has-text('Đăng ngay')",
+        "button:text-is('Post anyway')",
+        "button:has-text('Post anyway')",
+        "button:has-text('Vẫn đăng')",
+        "div[role='dialog'] button:has-text('Post now')",
+        "div[role='dialog'] button:has-text('Post')",
+        "div[role='dialog'] button:has-text('Đăng')",
+        "button:has-text('Confirm')",
+        "button:has-text('Xác nhận')",
+        "button:has-text('Continue to post')",
+        "button:has-text('Tiếp tục đăng')",
+    ]
+
     async def _dismiss_popups_and_tooltips(self, page: Page) -> None:
         """
         Dismisses onboarding tooltips, guided tours, and popovers on TikTok Studio
@@ -50,6 +67,28 @@ class TikTokUploader(BaseUploader):
                     await asyncio.sleep(0.3)
             except Exception:
                 pass
+
+    async def _handle_confirmation_popups(self, page: Page, log_callback: Optional[Callable] = None) -> bool:
+        """
+        Detects and clicks confirmation popups such as 'Continue to post?' with 'Post now' button.
+        """
+        if isinstance(page, (AsyncMock, MagicMock)):
+            return False
+
+        for c_sel in self.CONFIRM_POPUP_SELECTORS:
+            try:
+                c_cand = page.locator(c_sel).first
+                if await self.element_count(c_cand) > 0 and await self.element_is_visible(c_cand):
+                    self.log(f"Phát hiện hộp thoại xác nhận bản quyền/đăng bài ({c_sel}), đang click Post now...", "info", log_callback)
+                    try:
+                        await c_cand.click(timeout=3000)
+                    except Exception:
+                        await c_cand.click(force=True, timeout=2000)
+                    await asyncio.sleep(1)
+                    return True
+            except Exception:
+                pass
+        return False
 
     async def _check_post_button_status(self, page: Page) -> Dict[str, Any]:
         """
@@ -339,34 +378,22 @@ class TikTokUploader(BaseUploader):
                 except Exception:
                     pass
 
-            # Handle possible confirmation popups (e.g. "Post anyway" for copyright or guidelines)
-            confirm_selectors = [
-                "button:has-text('Post anyway')",
-                "button:has-text('Vẫn đăng')",
-                "button:has-text('Confirm')",
-                "button:has-text('Xác nhận')",
-                "button:has-text('Continue to post')",
-                "button:has-text('Tiếp tục đăng')",
-            ]
+            # Handle possible confirmation popups (e.g. "Continue to post?" with "Post now")
             if not is_mock:
-                await asyncio.sleep(2)
-                for c_sel in confirm_selectors:
-                    try:
-                        c_cand = page.locator(c_sel).first
-                        if await self.element_count(c_cand) > 0 and await self.element_is_visible(c_cand):
-                            self.log(f"Đang xác nhận hộp thoại xuất bản ({c_sel})...", "info", log_callback)
-                            await c_cand.click(timeout=3000)
-                            break
-                    except Exception:
-                        pass
+                await asyncio.sleep(1.5)
+                await self._handle_confirmation_popups(page, log_callback)
 
             # Wait for post submission confirmation
             if not is_mock:
                 self.log("Đang chờ TikTok xử lý và xác nhận xuất bản video hoàn tất...", "info", log_callback)
                 success_confirmed = False
-                for _ in range(45):
+                for wait_turn in range(45):
                     await asyncio.sleep(1)
                     try:
+                        # Continually check if a confirmation dialog appeared (e.g. Continue to post? -> Post now)
+                        if wait_turn < 10:
+                            await self._handle_confirmation_popups(page, log_callback)
+
                         current_url = getattr(page, "url", "")
                         if "/content" in current_url or "/manage" in current_url:
                             self.log(f"Đã phát hiện URL chuyển hướng thành công: {current_url}", "info", log_callback)
@@ -393,12 +420,6 @@ class TikTokUploader(BaseUploader):
                         if success_confirmed:
                             break
 
-                        # Check if a delayed "Post anyway" confirmation popped up
-                        for c_sel in confirm_selectors:
-                            c_cand = page.locator(c_sel).first
-                            if await self.element_count(c_cand) > 0 and await self.element_is_visible(c_cand):
-                                self.log(f"Phát hiện hộp thoại xác nhận ({c_sel}), đang click...", "info", log_callback)
-                                await c_cand.click(timeout=2000)
                     except Exception:
                         pass
 
