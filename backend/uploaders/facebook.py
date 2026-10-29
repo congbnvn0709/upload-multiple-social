@@ -17,7 +17,7 @@ class FacebookUploader(BaseUploader):
     Automated video publisher for Facebook Reels (supporting Profile and Fanpage).
     """
 
-    PROFILE_REELS_URL = "https://www.facebook.com/reel/create"
+    PROFILE_REELS_URL = "https://www.facebook.com/reels/create"
 
     async def upload(
         self,
@@ -147,18 +147,34 @@ class FacebookUploader(BaseUploader):
                         await res
 
             if not is_mock:
+                # Direct JS fallback click on Publish/Đăng button
+                try:
+                    await page.evaluate("""() => {
+                        const buttons = Array.from(document.querySelectorAll("div[role='button'], button"));
+                        const pubBtn = buttons.find(b => {
+                            const t = (b.innerText || '').trim();
+                            return t === 'Đăng' || t === 'Publish';
+                        });
+                        if (pubBtn) {
+                            pubBtn.scrollIntoView();
+                            pubBtn.click();
+                        }
+                    }""")
+                except Exception:
+                    pass
+
                 try:
                     LOGS_DIR.mkdir(parents=True, exist_ok=True)
                     await page.screenshot(path=str(LOGS_DIR / "facebook_debug_after_post.png"))
                 except Exception:
                     pass
 
-                # Wait for publish confirmation / modal close
+                # Wait for publish confirmation / redirect away from reels composer
                 self.log("Đang xác nhận kết quả đăng trên Facebook...", "info", log_callback)
-                for _ in range(25):  # up to 37s
+                for _ in range(30):  # up to 45s
                     await asyncio.sleep(1.5)
-                    # Check if creation dialog closed or redirected
-                    if "/reel/create" not in (page.url or ""):
+                    curr_url = page.url or ""
+                    if "reels/create" not in curr_url and "reel/create" not in curr_url:
                         break
                 await asyncio.sleep(3.0)
 
