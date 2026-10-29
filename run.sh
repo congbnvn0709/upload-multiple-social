@@ -63,22 +63,28 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir backen
 BACKEND_PID=$!
 
 # 7. Launch Frontend Server
-echo "[+] Launching React Vite frontend on http://localhost:5173..."
-(cd "$PROJECT_ROOT/frontend" && npm run dev) &
+FRONTEND_PORT=5173
+if lsof -i :$FRONTEND_PORT >/dev/null 2>&1; then
+    echo "[!] Port 5173 is in use. Using port 5174..."
+    FRONTEND_PORT=5174
+fi
+
+echo "[+] Launching React Vite frontend on http://localhost:$FRONTEND_PORT..."
+(cd "$PROJECT_ROOT/frontend" && npm run dev -- --port "$FRONTEND_PORT") &
 FRONTEND_PID=$!
 
 # 8. Open Browser Window
 (
     sleep 2
     if command -v open >/dev/null 2>&1; then
-        open "http://localhost:5173"
+        open "http://localhost:$FRONTEND_PORT"
     elif command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "http://localhost:5173"
+        xdg-open "http://localhost:$FRONTEND_PORT"
     fi
 ) &
 
 echo "=========================================================="
-echo " Application running at: http://localhost:5173"
+echo " Application running at: http://localhost:$FRONTEND_PORT"
 echo " API Docs available at:  http://localhost:8000/docs"
 echo " Press Ctrl+C to terminate both servers."
 echo "=========================================================="
