@@ -51,6 +51,53 @@ class TikTokUploader(BaseUploader):
             except Exception:
                 pass
 
+    async def _check_post_button_status(self, page: Page) -> Dict[str, Any]:
+        """
+        Evaluates the real DOM state of the Post button and upload status on TikTok Studio.
+        Returns a dict indicating if the button is ready to click and not disabled/uploading.
+        """
+        if isinstance(page, (AsyncMock, MagicMock)):
+            return {"found": True, "ready": True}
+
+        try:
+            status = await page.evaluate("""() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const postBtn = buttons.find(b => {
+                    const text = b.innerText.trim();
+                    return text === 'Post' || text === 'Đăng';
+                });
+                if (!postBtn) return { found: false, ready: false };
+
+                const hasDisabledAttr = postBtn.hasAttribute('disabled');
+                const ariaDisabled = postBtn.getAttribute('aria-disabled') === 'true';
+                const classDisabled = postBtn.className.toLowerCase().includes('disabled');
+                
+                const style = window.getComputedStyle(postBtn);
+                const notAllowed = style.cursor === 'not-allowed';
+                const lowOpacity = parseFloat(style.opacity || '1') < 0.8;
+                
+                const bodyText = document.body.innerText;
+                const isStillUploading = bodyText.includes('Checks can only start after the file is uploaded') ||
+                                        bodyText.includes('Uploading...');
+
+                const isReady = !hasDisabledAttr && !ariaDisabled && !classDisabled && !notAllowed && !lowOpacity && !isStillUploading;
+                return {
+                    found: true,
+                    ready: isReady,
+                    isStillUploading,
+                    hasDisabledAttr,
+                    ariaDisabled,
+                    classDisabled,
+                    notAllowed,
+                    lowOpacity,
+                    bgColor: style.backgroundColor
+                };
+            }""")
+            return status if isinstance(status, dict) else {"found": False, "ready": False}
+        except Exception as e:
+            logger.debug("Error checking post button status: %s", e)
+            return {"found": False, "ready": False}
+
     async def upload(
         self,
         page: Page,
@@ -111,22 +158,9 @@ class TikTokUploader(BaseUploader):
             else:
                 await page.set_input_files("input[type='file']", video_path)
 
-            self.log("Video đã được tải lên form, đang chờ xử lý và hoàn tất tải...", "info", log_callback)
+            self.log("Video đã được nạp vào form. Đang chờ TikTok tải lên và xử lý...", "info", log_callback)
 
             is_mock = isinstance(page, (AsyncMock, MagicMock))
-
-            # Wait for upload completion (preview ready or post button active)
-            if not is_mock:
-                for _ in range(40):
-                    await asyncio.sleep(1)
-                    await self._dismiss_popups_and_tooltips(page)
-                    try:
-                        # Check if Post button is present and enabled
-                        post_cand = page.locator("button:text-is('Post'), button:text-is('Đăng'), button[data-e2e='post_video_button'], button:has-text('Post')").first
-                        if await self.element_count(post_cand) > 0 and await self.element_is_enabled(post_cand):
-                            break
-                    except Exception:
-                        pass
 
             # Build caption and hashtags
             caption = metadata.get("caption", "").strip()
@@ -134,6 +168,7 @@ class TikTokUploader(BaseUploader):
             tag_str = " ".join([tag if tag.startswith("#") else f"#{tag}" for tag in hashtags]).strip()
             full_caption = f"{caption} {tag_str}".strip() if tag_str else caption
 
+            # Enter caption while video is uploading
             if full_caption:
                 self.log(f"Đang nhập tiêu đề và chú thích: {full_caption[:60]}...", "info", log_callback)
                 caption_selectors = [
@@ -164,6 +199,30 @@ class TikTokUploader(BaseUploader):
                     pass
 
                 await self.type_humanized(page, caption_loc, full_caption, min_delay=0.001, max_delay=0.01)
+
+            # Wait for video upload and processing to complete 100% (up to 180 seconds)
+            if not is_mock:
+                self.log("Đang chờ TikTok xử lý xong file video và hoàn tất bước kiểm tra bản quyền (Checks)...", "info", log_callback)
+                upload_ready = False
+                for wait_step in range(90):  # 90 * 2s = 180 seconds max
+                    await asyncio.sleep(2)
+                    await self._dismiss_popups_and_tooltips(page)
+
+                    btn_status = await self._check_post_button_status(page)
+                    if btn_status.get("ready"):
+                        upload_ready = True
+                        self.log("TikTok đã tải và xử lý video xong 100%! Nút Đăng đã chuyển sang màu đỏ kích hoạt.", "info", log_callback)
+                        break
+
+                    if wait_step % 5 == 0:
+                        is_uploading = btn_status.get("isStillUploading", True)
+                        if is_uploading:
+                            self.log(f"Tiến trình tải video lên TikTok đang diễn ra ({wait_step * 2}s)...", "info", log_callback)
+                        else:
+                            self.log(f"Đang chờ bước kiểm tra bản quyền Checks hoàn tất ({wait_step * 2}s)...", "info", log_callback)
+
+                if not upload_ready:
+                    self.log("Cảnh báo: Thời gian xử lý video quá lâu nhưng vẫn thử bấm Đăng video...", "warning", log_callback)
 
             # Dismiss popups again before submitting
             await self._dismiss_popups_and_tooltips(page)
@@ -305,7 +364,7 @@ class TikTokUploader(BaseUploader):
             if not is_mock:
                 self.log("Đang chờ TikTok xử lý và xác nhận xuất bản video hoàn tất...", "info", log_callback)
                 success_confirmed = False
-                for _ in range(40):
+                for _ in range(45):
                     await asyncio.sleep(1)
                     try:
                         current_url = getattr(page, "url", "")
