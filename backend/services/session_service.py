@@ -22,16 +22,29 @@ LOGIN_URLS: Dict[str, str] = {
     "youtube": "https://studio.youtube.com/",
 }
 
-PLATFORM_DOMAINS: Dict[str, list[str]] = {
-    "tiktok": ["tiktok.com"],
-    "threads": ["threads.net", "instagram.com"],
-    "facebook": ["facebook.com"],
-    "youtube": ["youtube.com"],
+# Authentication and session cookie indicators
+PLATFORM_AUTH_CONFIG: Dict[str, Dict[str, list[str]]] = {
+    "tiktok": {
+        "domains": ["tiktok.com"],
+        "cookies": ["sessionid", "sessionid_ss", "sid_guard", "sid_tt"],
+    },
+    "facebook": {
+        "domains": ["facebook.com"],
+        "cookies": ["c_user", "xs"],
+    },
+    "threads": {
+        "domains": ["threads.net", "threads.com", "instagram.com"],
+        "cookies": ["sessionid", "ds_user_id"],
+    },
+    "youtube": {
+        "domains": ["youtube.com", "google.com"],
+        "cookies": ["SID", "SSID", "LOGIN_INFO", "SAPISID", "APISID", "HSID"],
+    },
 }
 
-# Global references to manage active login window
-_active_browser_context = None
-_active_browser_pw = None
+# Global thread-safe management of interactive login window
+_active_login_thread: Optional[threading.Thread] = None
+_stop_login_event = threading.Event()
 _active_browser_lock = threading.Lock()
 
 
@@ -78,28 +91,22 @@ def ensure_profile_unlocked(profile_dir: Optional[Path] = None) -> None:
 
 
 def close_active_login_window() -> None:
-    """Closes any currently active interactive login browser instance."""
-    global _active_browser_context, _active_browser_pw
+    """
+    Signals any currently active interactive login browser instance to gracefully close
+    from its own worker thread, avoiding Greenlet cross-thread switching errors.
+    """
+    global _active_login_thread
     with _active_browser_lock:
-        if _active_browser_context is not None:
-            try:
-                _active_browser_context.close()
-            except Exception as e:
-                logger.warning("Error closing active login context: %s", e)
-            _active_browser_context = None
-
-        if _active_browser_pw is not None:
-            try:
-                _active_browser_pw.stop()
-            except Exception as e:
-                logger.warning("Error stopping active login playwright: %s", e)
-            _active_browser_pw = None
+        _stop_login_event.set()
+        if _active_login_thread is not None and _active_login_thread.is_alive():
+            _active_login_thread.join(timeout=2.0)
+        _active_login_thread = None
 
 
 def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
     """
-    Inspect the browser profile directory for stored session cookies
-    to determine authentication status for each social platform.
+    Inspects the browser profile directory for stored authenticated session cookies
+    to determine actual login status across platforms.
     """
     target_dir = profile_dir if profile_dir is not None else BROWSER_PROFILE_DIR
     status: Dict[str, bool] = {
@@ -112,7 +119,7 @@ def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
     if not target_dir.exists():
         return status
 
-    found_domains: set[str] = set()
+    found_cookies: set[tuple[str, str]] = set()
 
     # 1. Inspect storage_state.json / state.json if present
     for state_name in ["storage_state.json", "state.json"]:
@@ -123,12 +130,9 @@ def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
                     data = json.load(f)
                 for cookie in data.get("cookies", []):
                     domain = cookie.get("domain", "").lower().lstrip(".")
-                    if domain:
-                        found_domains.add(domain)
-                for origin in data.get("origins", []):
-                    origin_str = origin.get("origin", "").lower()
-                    if origin_str:
-                        found_domains.add(origin_str)
+                    name = cookie.get("name", "")
+                    if domain and name:
+                        found_cookies.add((domain, name))
             except Exception as e:
                 logger.warning("Error reading state file %s: %s", state_file, e)
 
@@ -145,10 +149,10 @@ def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
             try:
                 conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 cursor = conn.cursor()
-                cursor.execute("SELECT DISTINCT host_key FROM cookies")
-                for (host,) in cursor.fetchall():
-                    if host:
-                        found_domains.add(host.lower().lstrip("."))
+                cursor.execute("SELECT host_key, name FROM cookies")
+                for host, name in cursor.fetchall():
+                    if host and name:
+                        found_cookies.add((host.lower().lstrip("."), name))
                 conn.close()
                 read_success = True
             except Exception:
@@ -162,20 +166,20 @@ def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
                     shutil.copy2(db_path, tmp_path)
                     conn = sqlite3.connect(tmp_path)
                     cursor = conn.cursor()
-                    cursor.execute("SELECT DISTINCT host_key FROM cookies")
-                    for (host,) in cursor.fetchall():
-                        if host:
-                            found_domains.add(host.lower().lstrip("."))
+                    cursor.execute("SELECT host_key, name FROM cookies")
+                    for host, name in cursor.fetchall():
+                        if host and name:
+                            found_cookies.add((host.lower().lstrip("."), name))
                     conn.close()
                     os.remove(tmp_path)
                 except Exception as e:
                     logger.warning("Error reading SQLite cookies from %s: %s", db_path, e)
 
-    # Match discovered domains against platforms
-    for platform, domains in PLATFORM_DOMAINS.items():
+    # Check for authentication cookies
+    for platform, config in PLATFORM_AUTH_CONFIG.items():
         matched = any(
-            any(d in stored_domain for stored_domain in found_domains)
-            for d in domains
+            any(d in stored_domain for d in config["domains"]) and stored_name in config["cookies"]
+            for stored_domain, stored_name in found_cookies
         )
         status[platform] = matched
 
@@ -184,26 +188,22 @@ def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
 
 def _run_browser(platform: str, headless: bool, profile_dir: Path):
     """Worker function to launch Playwright persistent browser context for interactive login."""
-    global _active_browser_context, _active_browser_pw
-
     # Ensure stale locks are cleared
     ensure_profile_unlocked(profile_dir)
     profile_dir.mkdir(parents=True, exist_ok=True)
     url = LOGIN_URLS[platform]
 
+    _stop_login_event.clear()
+
+    pw = None
+    context = None
     try:
         pw = sync_playwright().start()
-        with _active_browser_lock:
-            _active_browser_pw = pw
-
         context = pw.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=headless,
             args=["--start-maximized"],
         )
-
-        with _active_browser_lock:
-            _active_browser_context = context
 
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(url)
@@ -218,18 +218,32 @@ def _run_browser(platform: str, headless: bool, profile_dir: Path):
         # Sync session state on navigation
         page.on("framenavigated", lambda frame: sync_state())
 
-        # Keep window open until user closes browser or context closes
-        try:
-            context.wait_for_event("close", timeout=0)
-        except Exception:
-            pass
-        finally:
-            sync_state()
+        # Wait until user closes all windows or external stop signal is received
+        while not _stop_login_event.is_set():
+            try:
+                pages_open = [p for p in context.pages if not p.is_closed()]
+                if not pages_open:
+                    break
+                time.sleep(0.5)
+            except Exception:
+                break
+
+        sync_state()
 
     except Exception as e:
         logger.error("Error running login browser for %s: %s", platform, e)
     finally:
-        close_active_login_window()
+        # Gracefully close context and Playwright from within the same thread
+        try:
+            if context is not None:
+                context.close()
+        except Exception:
+            pass
+        try:
+            if pw is not None:
+                pw.stop()
+        except Exception:
+            pass
         ensure_profile_unlocked(profile_dir)
 
 
@@ -243,6 +257,7 @@ def open_login_window(
     Launch a headed Playwright browser instance with persistent context pointing to the platform's login page.
     Closes any previously open login window to prevent Chromium profile lock conflicts.
     """
+    global _active_login_thread
     platform_key = platform.strip().lower()
     if platform_key not in LOGIN_URLS:
         raise ValueError(
@@ -264,5 +279,7 @@ def open_login_window(
         name=f"LoginWindow-{platform_key}",
         daemon=True,
     )
+    with _active_browser_lock:
+        _active_login_thread = thread
     thread.start()
     return thread
