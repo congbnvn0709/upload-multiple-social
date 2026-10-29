@@ -48,6 +48,28 @@ _stop_login_event = threading.Event()
 _active_browser_lock = threading.Lock()
 
 
+def get_browser_launch_kwargs(headless: bool, user_data_dir: str) -> dict:
+    """
+    Constructs launch arguments for Playwright Persistent Context.
+    Uses system installed Google Chrome and anti-detection flags when available
+    to prevent Google / YouTube from blocking sign-in ('This browser or app may not be secure').
+    """
+    kwargs = {
+        "user_data_dir": user_data_dir,
+        "headless": headless,
+        "ignore_default_args": ["--enable-automation"],
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--start-maximized",
+            "--no-sandbox",
+        ],
+    }
+    # Check for real Google Chrome app on macOS or Linux/Windows
+    if os.path.exists("/Applications/Google Chrome.app") or shutil.which("google-chrome") or shutil.which("chrome"):
+        kwargs["channel"] = "chrome"
+    return kwargs
+
+
 def ensure_profile_unlocked(profile_dir: Optional[Path] = None) -> None:
     """
     Cleans up stale Chromium lock symlinks (SingletonLock, SingletonCookie, SingletonSocket)
@@ -199,11 +221,22 @@ def _run_browser(platform: str, headless: bool, profile_dir: Path):
     context = None
     try:
         pw = sync_playwright().start()
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=headless,
-            args=["--start-maximized"],
-        )
+        launch_kwargs = get_browser_launch_kwargs(headless=headless, user_data_dir=str(profile_dir))
+        try:
+            context = pw.chromium.launch_persistent_context(**launch_kwargs)
+        except Exception as launch_err:
+            logger.warning("Failed to launch with channel 'chrome', falling back: %s", launch_err)
+            launch_kwargs.pop("channel", None)
+            context = pw.chromium.launch_persistent_context(**launch_kwargs)
+
+        try:
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+        except Exception:
+            pass
 
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(url)

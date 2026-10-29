@@ -10,6 +10,7 @@ from backend.config import BROWSER_PROFILE_DIR, HEADLESS
 from backend.services.session_service import (
     close_active_login_window,
     ensure_profile_unlocked,
+    get_browser_launch_kwargs,
 )
 from backend.uploaders.base import get_uploader
 
@@ -113,31 +114,26 @@ async def run_publishing_pipeline(request: PublishRequest):
     await asyncio.to_thread(ensure_profile_unlocked, BROWSER_PROFILE_DIR)
 
     async with async_playwright() as pw:
+        launch_kwargs = get_browser_launch_kwargs(headless=HEADLESS, user_data_dir=str(BROWSER_PROFILE_DIR))
+        launch_kwargs["viewport"] = {"width": 1280, "height": 800}
+
+        async def _launch():
+            try:
+                return await pw.chromium.launch_persistent_context(**launch_kwargs)
+            except Exception:
+                fallback_kwargs = dict(launch_kwargs)
+                fallback_kwargs.pop("channel", None)
+                return await pw.chromium.launch_persistent_context(**fallback_kwargs)
+
         try:
-            context = await pw.chromium.launch_persistent_context(
-                user_data_dir=str(BROWSER_PROFILE_DIR),
-                headless=HEADLESS,
-                viewport={"width": 1280, "height": 800},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
-            )
+            context = await _launch()
         except Exception as e:
             if "Opening in existing browser session" in str(e) or "Singleton" in str(e):
                 logger.warning("Browser profile busy; forcing lock release and retrying...")
                 await asyncio.to_thread(ensure_profile_unlocked, BROWSER_PROFILE_DIR)
                 await asyncio.sleep(1)
                 try:
-                    context = await pw.chromium.launch_persistent_context(
-                        user_data_dir=str(BROWSER_PROFILE_DIR),
-                        headless=HEADLESS,
-                        viewport={"width": 1280, "height": 800},
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                        ],
-                    )
+                    context = await _launch()
                 except Exception as retry_err:
                     logger.error(f"Failed to launch browser context after retry: {retry_err}")
                     await manager.broadcast_log(
@@ -154,6 +150,15 @@ async def run_publishing_pipeline(request: PublishRequest):
                     message="Không thể khởi động trình duyệt (.browser_profile đang bị khóa hoặc bận). Hãy đóng các cửa sổ trình duyệt đang mở và thử lại.",
                 )
                 return
+
+        try:
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+        except Exception:
+            pass
 
         try:
             for platform_name, config in enabled_platforms:
