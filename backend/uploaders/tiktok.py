@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from playwright.async_api import Page
 
+from backend.config import LOGS_DIR
 from backend.uploaders.base import BaseUploader
 
 logger = logging.getLogger(__name__)
@@ -197,18 +198,21 @@ class TikTokUploader(BaseUploader):
             ]
 
             post_clicked = False
+            target_post_btn = None
             for p_sel in post_selectors:
                 try:
                     cand = page.locator(p_sel).first
                     if await self.element_count(cand) > 0:
                         is_vis = await self.element_is_visible(cand)
                         is_enb = await self.element_is_enabled(cand)
-                        self.log(f"Tìm thấy nút ({p_sel}): visible={is_vis}, enabled={is_enb}", "info", log_callback)
+                        self.log(f"Tìm thấy nút Post ({p_sel}): visible={is_vis}, enabled={is_enb}", "info", log_callback)
                         if hasattr(cand, "scroll_into_view_if_needed"):
                             res = cand.scroll_into_view_if_needed()
                             if inspect.isawaitable(res):
                                 await res
 
+                        target_post_btn = cand
+                        # 1. Try standard click
                         try:
                             res = cand.click(timeout=5000)
                             if inspect.isawaitable(res):
@@ -217,18 +221,39 @@ class TikTokUploader(BaseUploader):
                             self.log(f"Đã click nút Post thành công bằng selector: {p_sel}", "info", log_callback)
                             break
                         except Exception as e:
-                            self.log(f"Click bình thường thất bại ({e}), thử force click...", "debug", log_callback)
-                            res = cand.click(force=True, timeout=3000)
-                            if inspect.isawaitable(res):
-                                await res
-                            post_clicked = True
-                            self.log(f"Đã force click nút Post bằng selector: {p_sel}", "info", log_callback)
-                            break
+                            self.log(f"Click thường thất bại ({e}), thử force click...", "debug", log_callback)
+                            try:
+                                res = cand.click(force=True, timeout=3000)
+                                if inspect.isawaitable(res):
+                                    await res
+                                post_clicked = True
+                                self.log(f"Đã force click nút Post bằng selector: {p_sel}", "info", log_callback)
+                                break
+                            except Exception:
+                                pass
                 except Exception as ex:
                     logger.debug("Error checking selector %s: %s", p_sel, ex)
                     continue
 
-            # Fallback JavaScript click directly on button with text 'Post'
+            # 2. Try mouse bounding box click if locator is available
+            if not is_mock and target_post_btn:
+                try:
+                    if hasattr(target_post_btn, "bounding_box") and hasattr(page, "mouse"):
+                        bbox = target_post_btn.bounding_box()
+                        if inspect.isawaitable(bbox):
+                            bbox = await bbox
+                        if bbox:
+                            self.log("Click chuột vào tọa độ nút Post...", "info", log_callback)
+                            click_x = bbox["x"] + bbox["width"] / 2
+                            click_y = bbox["y"] + bbox["height"] / 2
+                            mouse_click = page.mouse.click(click_x, click_y)
+                            if inspect.isawaitable(mouse_click):
+                                await mouse_click
+                            post_clicked = True
+                except Exception as mouse_err:
+                    self.log(f"Mouse click lỗi: {mouse_err}", "debug", log_callback)
+
+            # 3. Fallback JavaScript click directly on button with text 'Post'
             if not post_clicked and not is_mock:
                 self.log("Thử click nút Post thông qua JavaScript evaluate...", "info", log_callback)
                 try:
@@ -248,6 +273,13 @@ class TikTokUploader(BaseUploader):
                 except Exception as js_err:
                     self.log(f"JavaScript click thất bại: {js_err}", "warning", log_callback)
 
+            # Save screenshot immediately after clicking Post for debugging
+            if not is_mock:
+                try:
+                    await page.screenshot(path=str(LOGS_DIR / "tiktok_debug_after_post.png"))
+                except Exception:
+                    pass
+
             # Handle possible confirmation popups (e.g. "Post anyway" for copyright or guidelines)
             confirm_selectors = [
                 "button:has-text('Post anyway')",
@@ -258,7 +290,7 @@ class TikTokUploader(BaseUploader):
                 "button:has-text('Tiếp tục đăng')",
             ]
             if not is_mock:
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2)
                 for c_sel in confirm_selectors:
                     try:
                         c_cand = page.locator(c_sel).first
@@ -273,7 +305,7 @@ class TikTokUploader(BaseUploader):
             if not is_mock:
                 self.log("Đang chờ TikTok xử lý và xác nhận xuất bản video hoàn tất...", "info", log_callback)
                 success_confirmed = False
-                for _ in range(35):
+                for _ in range(40):
                     await asyncio.sleep(1)
                     try:
                         current_url = getattr(page, "url", "")
@@ -282,17 +314,16 @@ class TikTokUploader(BaseUploader):
                             success_confirmed = True
                             break
 
+                        # True submission indicators (modal dialog or completion buttons)
                         indicators = [
-                            "text='Your video has been uploaded'",
-                            "text='Video của bạn đã được tải lên'",
-                            "text='Video của bạn đã được đăng'",
-                            "text='Manage your posts'",
-                            "text='Quản lý bài viết'",
-                            "text='Upload another video'",
-                            "text='Tải lên video khác'",
                             "button:has-text('Manage your posts')",
+                            "button:has-text('Upload another video')",
                             "button:has-text('Quản lý bài viết')",
-                            "div:has-text('Uploaded')",
+                            "button:has-text('Tải lên video khác')",
+                            "text='Your video is being uploaded to TikTok!'",
+                            "text='Your video has been published'",
+                            "text='Video của bạn đã được xuất bản'",
+                            "text='Video của bạn đang được tải lên'",
                         ]
                         for ind in indicators:
                             ind_loc = page.locator(ind).first
@@ -312,18 +343,24 @@ class TikTokUploader(BaseUploader):
                     except Exception:
                         pass
 
+                # Take screenshot before deciding final status
+                try:
+                    await page.screenshot(path=str(LOGS_DIR / "tiktok_debug_final_state.png"))
+                except Exception:
+                    pass
+
                 if not success_confirmed:
                     screenshot_path = await self.capture_error_screenshot(page, "tiktok")
                     self.log(
-                        f"TikTok chưa ghi nhận xuất bản thành công (đã chụp ảnh lỗi: {screenshot_path}).",
+                        f"TikTok chưa ghi nhận xuất bản thành công (đã chụp ảnh lỗi: {screenshot_path}). Vui lòng kiểm tra màn hình trình duyệt.",
                         "error",
                         log_callback,
                     )
                     return False
 
-                # Allow a few seconds for pending background network sync before closing browser
-                self.log("Chờ đồng bộ mạng hoàn tất trước khi hoàn thành...", "info", log_callback)
-                await asyncio.sleep(4)
+                # Allow 5 seconds for pending background network sync before closing browser
+                self.log("Video đã được xác nhận đăng thành công! Đang chờ đồng bộ mạng hoàn tất...", "success", log_callback)
+                await asyncio.sleep(5)
 
             self.log("TikTok video post initiated successfully!", "success", log_callback)
             return True
