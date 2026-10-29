@@ -129,6 +129,22 @@ async def test_threads_uploader_mock():
 
 
 @pytest.mark.asyncio
+async def test_threads_uploader_check_post_button_status():
+    uploader = ThreadsUploader()
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value={"found": True, "ready": True, "isStillUploading": False})
+    status = await uploader._check_post_button_status(mock_page)
+    assert status["ready"] is True
+    assert status["found"] is True
+
+    # Error handling fallback
+    mock_page.evaluate = AsyncMock(side_effect=Exception("Evaluate error"))
+    err_status = await uploader._check_post_button_status(mock_page)
+    assert err_status["ready"] is False
+
+
+
+@pytest.mark.asyncio
 async def test_facebook_uploader_mock_profile():
     uploader = FacebookUploader()
     mock_page = AsyncMock()

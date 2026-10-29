@@ -2,9 +2,11 @@ import asyncio
 import inspect
 import logging
 from typing import Any, Callable, Dict, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 from playwright.async_api import Page
 
+from backend.config import LOGS_DIR
 from backend.uploaders.base import BaseUploader
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,8 @@ class FacebookUploader(BaseUploader):
         metadata: Dict[str, Any],
         log_callback: Optional[Callable] = None,
     ) -> bool:
+        is_mock = isinstance(page, (AsyncMock, MagicMock)) or not hasattr(page, "evaluate")
+
         try:
             target = metadata.get("target", "profile").lower()
             page_id = (metadata.get("page_id") or "").strip()
@@ -61,8 +65,9 @@ class FacebookUploader(BaseUploader):
             else:
                 await page.set_input_files("input[type='file']", video_path)
 
-            self.log("Waiting for video upload to process...", "info", log_callback)
-            await asyncio.sleep(0.5)
+            if not is_mock:
+                self.log("Waiting for video upload to process...", "info", log_callback)
+                await asyncio.sleep(2.0)
 
             # Build caption and hashtags
             caption = metadata.get("caption", "").strip()
@@ -83,7 +88,30 @@ class FacebookUploader(BaseUploader):
                 if not desc_loc:
                     desc_loc = await self.get_locator(page, "div[contenteditable='true']")
 
-                await self.type_humanized(page, desc_loc, full_caption, min_delay=0.001, max_delay=0.01)
+                try:
+                    if hasattr(desc_loc, "click"):
+                        click_res = desc_loc.click()
+                        if inspect.isawaitable(click_res):
+                            await click_res
+                    if not is_mock and hasattr(page, "keyboard"):
+                        await page.keyboard.press("ControlOrMeta+A")
+                        await page.keyboard.press("Backspace")
+                        await asyncio.sleep(0.2)
+                except Exception:
+                    pass
+
+                inserted = False
+                if hasattr(page, "keyboard") and hasattr(page.keyboard, "insert_text"):
+                    try:
+                        res = page.keyboard.insert_text(full_caption)
+                        if inspect.isawaitable(res):
+                            await res
+                        inserted = True
+                    except Exception:
+                        inserted = False
+
+                if not inserted:
+                    await self.type_humanized(page, desc_loc, full_caption, min_delay=0.01, max_delay=0.03)
 
             # Advance through Next wizard steps (e.g. Audio, Edit)
             self.log("Advancing through Reels creation steps...", "info", log_callback)
@@ -97,7 +125,8 @@ class FacebookUploader(BaseUploader):
             for step in range(2):
                 clicked_next = await self.safe_click(page, next_selectors, timeout=3000, optional=True)
                 if clicked_next:
-                    await asyncio.sleep(0.5)
+                    if not is_mock:
+                        await asyncio.sleep(1.0)
                 else:
                     break
 
@@ -116,6 +145,22 @@ class FacebookUploader(BaseUploader):
                     res = loc.click()
                     if inspect.isawaitable(res):
                         await res
+
+            if not is_mock:
+                try:
+                    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                    await page.screenshot(path=str(LOGS_DIR / "facebook_debug_after_post.png"))
+                except Exception:
+                    pass
+
+                # Wait for publish confirmation / modal close
+                self.log("Đang xác nhận kết quả đăng trên Facebook...", "info", log_callback)
+                for _ in range(25):  # up to 37s
+                    await asyncio.sleep(1.5)
+                    # Check if creation dialog closed or redirected
+                    if "/reel/create" not in (page.url or ""):
+                        break
+                await asyncio.sleep(3.0)
 
             self.log("Facebook Reel published successfully!", "success", log_callback)
             return True

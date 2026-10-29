@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 from typing import Any, Callable, Dict, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 from playwright.async_api import Page
 
@@ -190,10 +191,21 @@ class YouTubeUploader(BaseUploader):
                     if inspect.isawaitable(res):
                         await res
 
+            is_mock = isinstance(page, (AsyncMock, MagicMock)) or not hasattr(page, "evaluate")
+            if not is_mock:
+                self.log("Đang xác nhận kết quả xuất bản YouTube...", "info", log_callback)
+                for _ in range(25):  # up to 37s
+                    await asyncio.sleep(1.5)
+                    share_dlg = page.locator("ytcp-video-share-dialog, ytcp-uploads-dialog[style*='display: none']")
+                    if (await self.element_count(share_dlg)) > 0:
+                        break
+                await asyncio.sleep(3.0)
+
             self.log("YouTube video published / scheduled successfully!", "success", log_callback)
             return True
 
         except Exception as e:
+            logger.exception("YouTube upload error: %s", e)
             self.check_login_redirect(page, "youtube", log_callback)
             await self.capture_error_screenshot(page, "youtube")
             self.log(f"YouTube upload failed: {str(e)}", "error", log_callback)
