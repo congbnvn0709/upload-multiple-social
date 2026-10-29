@@ -226,18 +226,54 @@ class TikTokUploader(BaseUploader):
                         click_res = caption_loc.click()
                         if inspect.isawaitable(click_res):
                             await click_res
+                        if not is_mock:
+                            await asyncio.sleep(0.3)
                     if hasattr(page, "keyboard"):
                         # Select all and delete default text (TikTok auto-inserts video filename)
                         press_a = page.keyboard.press("ControlOrMeta+A")
                         if inspect.isawaitable(press_a):
                             await press_a
+                        if not is_mock:
+                            await asyncio.sleep(0.1)
                         press_del = page.keyboard.press("Backspace")
                         if inspect.isawaitable(press_del):
                             await press_del
+                        if not is_mock:
+                            # Crucial pause to allow Draft.js to re-render empty state before new input
+                            await asyncio.sleep(0.3)
                 except Exception:
                     pass
 
-                await self.type_humanized(page, caption_loc, full_caption, min_delay=0.001, max_delay=0.01)
+                # Atomic insert to prevent dropped characters caused by rapid key strokes
+                inserted = False
+                if hasattr(page, "keyboard") and hasattr(page.keyboard, "insert_text"):
+                    try:
+                        res = page.keyboard.insert_text(full_caption)
+                        if inspect.isawaitable(res):
+                            await res
+                        inserted = True
+                    except Exception:
+                        inserted = False
+
+                if not inserted:
+                    await self.type_humanized(page, caption_loc, full_caption, min_delay=0.03, max_delay=0.06)
+                elif not is_mock:
+                    await asyncio.sleep(0.3)
+                    try:
+                        editor_text = ""
+                        if hasattr(caption_loc, "inner_text"):
+                            res = caption_loc.inner_text()
+                            editor_text = await res if inspect.isawaitable(res) else str(res)
+                        # Verify text was entered accurately
+                        first_word = full_caption.split()[0] if full_caption.strip() else ""
+                        if first_word and first_word not in editor_text:
+                            self.log(f"Cảnh báo: Phát hiện text chưa chuẩn ('{first_word}' không có trong editor), đang nhập lại...", "warning", log_callback)
+                            await page.keyboard.press("ControlOrMeta+A")
+                            await page.keyboard.press("Backspace")
+                            await asyncio.sleep(0.2)
+                            await self.type_humanized(page, caption_loc, full_caption, min_delay=0.04, max_delay=0.07)
+                    except Exception:
+                        pass
 
             # Wait for video upload and processing to complete 100% (up to 180 seconds)
             if not is_mock:
