@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -27,6 +28,72 @@ PLATFORM_DOMAINS: Dict[str, list[str]] = {
     "facebook": ["facebook.com"],
     "youtube": ["youtube.com"],
 }
+
+# Global references to manage active login window
+_active_browser_context = None
+_active_browser_pw = None
+_active_browser_lock = threading.Lock()
+
+
+def ensure_profile_unlocked(profile_dir: Optional[Path] = None) -> None:
+    """
+    Cleans up stale Chromium lock symlinks (SingletonLock, SingletonCookie, SingletonSocket)
+    if the owning process is no longer alive, or terminates lingering Chrome-for-Testing processes.
+    """
+    target_dir = profile_dir if profile_dir is not None else BROWSER_PROFILE_DIR
+    if not target_dir.exists():
+        return
+
+    lock_file = target_dir / "SingletonLock"
+    if lock_file.is_symlink() or lock_file.exists():
+        try:
+            target = os.readlink(str(lock_file))
+            if "-" in target:
+                pid_str = target.rsplit("-", 1)[-1]
+                if pid_str.isdigit():
+                    pid = int(pid_str)
+                    try:
+                        os.kill(pid, 0)
+                        logger.info("Found active browser process %d holding profile lock. Terminating...", pid)
+                        os.kill(pid, 15)
+                        time.sleep(0.5)
+                        try:
+                            os.kill(pid, 0)
+                            os.kill(pid, 9)
+                        except OSError:
+                            pass
+                    except OSError:
+                        # Process not running; lock is stale
+                        pass
+        except Exception as e:
+            logger.warning("Error inspecting SingletonLock: %s", e)
+
+    for fname in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
+        p = target_dir / fname
+        try:
+            if p.is_symlink() or p.exists():
+                p.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Could not unlink %s: %s", fname, e)
+
+
+def close_active_login_window() -> None:
+    """Closes any currently active interactive login browser instance."""
+    global _active_browser_context, _active_browser_pw
+    with _active_browser_lock:
+        if _active_browser_context is not None:
+            try:
+                _active_browser_context.close()
+            except Exception as e:
+                logger.warning("Error closing active login context: %s", e)
+            _active_browser_context = None
+
+        if _active_browser_pw is not None:
+            try:
+                _active_browser_pw.stop()
+            except Exception as e:
+                logger.warning("Error stopping active login playwright: %s", e)
+            _active_browser_pw = None
 
 
 def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
@@ -117,38 +184,53 @@ def get_account_status(profile_dir: Optional[Path] = None) -> Dict[str, bool]:
 
 def _run_browser(platform: str, headless: bool, profile_dir: Path):
     """Worker function to launch Playwright persistent browser context for interactive login."""
+    global _active_browser_context, _active_browser_pw
+
+    # Ensure stale locks are cleared
+    ensure_profile_unlocked(profile_dir)
     profile_dir.mkdir(parents=True, exist_ok=True)
     url = LOGIN_URLS[platform]
 
     try:
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=headless,
-                args=["--start-maximized"],
-            )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(url)
+        pw = sync_playwright().start()
+        with _active_browser_lock:
+            _active_browser_pw = pw
 
-            def sync_state():
-                try:
-                    state_file = profile_dir / "storage_state.json"
-                    context.storage_state(path=str(state_file))
-                except Exception:
-                    pass
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=headless,
+            args=["--start-maximized"],
+        )
 
-            # Sync session state on navigation
-            page.on("framenavigated", lambda frame: sync_state())
+        with _active_browser_lock:
+            _active_browser_context = context
 
-            # Keep window open until user closes browser or context closes
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(url)
+
+        def sync_state():
             try:
-                context.wait_for_event("close", timeout=0)
+                state_file = profile_dir / "storage_state.json"
+                context.storage_state(path=str(state_file))
             except Exception:
                 pass
-            finally:
-                sync_state()
+
+        # Sync session state on navigation
+        page.on("framenavigated", lambda frame: sync_state())
+
+        # Keep window open until user closes browser or context closes
+        try:
+            context.wait_for_event("close", timeout=0)
+        except Exception:
+            pass
+        finally:
+            sync_state()
+
     except Exception as e:
         logger.error("Error running login browser for %s: %s", platform, e)
+    finally:
+        close_active_login_window()
+        ensure_profile_unlocked(profile_dir)
 
 
 def open_login_window(
@@ -159,7 +241,7 @@ def open_login_window(
 ) -> Optional[threading.Thread]:
     """
     Launch a headed Playwright browser instance with persistent context pointing to the platform's login page.
-    Runs in a background thread by default so it does not block HTTP requests.
+    Closes any previously open login window to prevent Chromium profile lock conflicts.
     """
     platform_key = platform.strip().lower()
     if platform_key not in LOGIN_URLS:
@@ -168,6 +250,9 @@ def open_login_window(
         )
 
     target_dir = profile_dir if profile_dir is not None else BROWSER_PROFILE_DIR
+
+    # Close previous login window if already open
+    close_active_login_window()
 
     if block:
         _run_browser(platform_key, headless, target_dir)

@@ -13,6 +13,7 @@ from backend.services.ai_service import (
 )
 from backend.services.session_service import (
     LOGIN_URLS,
+    close_active_login_window,
     get_account_status,
     open_login_window,
 )
@@ -83,6 +84,13 @@ async def open_login(payload: OpenLoginRequest):
         )
     open_login_window(platform)
     return {"status": "opened", "platform": platform}
+
+
+@app.post("/api/accounts/close-login")
+async def close_login():
+    """Close any currently open interactive login browser window."""
+    await asyncio.to_thread(close_active_login_window)
+    return {"status": "closed"}
 
 
 @app.post("/api/publish")
