@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
-import { Send, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Send, AlertCircle, CheckCircle2, Loader2, Sparkles, 
+  CheckSquare, Square, Copy, RefreshCw, Zap, Video 
+} from 'lucide-react';
 import AccountStatusHeader, { PLATFORMS_META } from './components/AccountStatusHeader';
 import VideoUploadSection from './components/VideoUploadSection';
 import AIPromptSection from './components/AIPromptSection';
@@ -85,15 +89,78 @@ export default function App() {
 
       return updated;
     });
+
+    setPublishMessage({
+      type: 'success',
+      text: '✨ Đã điền xong nội dung AI cho 4 nền tảng! Bạn có thể tinh chỉnh trước khi đăng.',
+    });
   };
 
   const enabledCount = Object.values(platformsConfig).filter((c) => c.enabled).length;
+
+  // Bulk actions for usability
+  const handleSelectAll = (select) => {
+    setPlatformsConfig((prev) => {
+      const next = {};
+      for (const [key, val] of Object.entries(prev)) {
+        next[key] = { ...val, enabled: select };
+      }
+      return next;
+    });
+  };
+
+  const handleSyncCaptions = () => {
+    // Find the first platform with a non-empty caption (priority: tiktok -> facebook -> threads -> youtube)
+    const sourceCaption = 
+      platformsConfig.tiktok.caption ||
+      platformsConfig.facebook.caption ||
+      platformsConfig.threads.caption ||
+      platformsConfig.youtube.caption;
+
+    if (!sourceCaption) {
+      setPublishMessage({
+        type: 'error',
+        text: 'Chưa có caption nào để đồng bộ! Hãy nhập nội dung vào một nền tảng hoặc dùng AI.',
+      });
+      return;
+    }
+
+    setPlatformsConfig((prev) => {
+      const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        next[key] = {
+          ...next[key],
+          caption: sourceCaption,
+        };
+      }
+      return next;
+    });
+
+    setPublishMessage({
+      type: 'success',
+      text: 'Đã sao chép nội dung đồng bộ cho tất cả nền tảng!',
+    });
+  };
+
+  const handleClearAllCaptions = () => {
+    setPlatformsConfig((prev) => {
+      const next = {};
+      for (const [key, val] of Object.entries(prev)) {
+        next[key] = {
+          ...val,
+          caption: '',
+          title: '',
+        };
+      }
+      return next;
+    });
+  };
 
   const handlePublish = async () => {
     if (!video || !video.path) {
       setPublishMessage({
         type: 'error',
-        text: 'Vui lòng tải video lên trước khi xuất bản!',
+        text: 'Vui lòng kéo thả hoặc chọn video tải lên trước khi xuất bản!',
       });
       return;
     }
@@ -101,7 +168,7 @@ export default function App() {
     if (enabledCount === 0) {
       setPublishMessage({
         type: 'error',
-        text: 'Vui lòng chọn ít nhất 1 nền tảng để đăng video!',
+        text: 'Vui lòng chọn ít nhất 1 nền tảng mạng xã hội để đăng video!',
       });
       return;
     }
@@ -110,7 +177,6 @@ export default function App() {
     setPublishMessage(null);
 
     try {
-      // Build publish payload
       const payloadPlatforms = {};
       for (const [key, conf] of Object.entries(platformsConfig)) {
         payloadPlatforms[key] = {
@@ -121,6 +187,7 @@ export default function App() {
           description: conf.caption || '',
           tags: conf.hashtags || [],
           target: conf.target || 'profile',
+          page_id: conf.page_id || '',
           visibility: conf.visibility || 'public',
         };
       }
@@ -142,7 +209,7 @@ export default function App() {
       const data = await res.json();
       setPublishMessage({
         type: 'success',
-        text: `Đã bắt đầu tiến trình đăng video lên ${enabledCount} nền tảng! Theo dõi nhật ký bên dưới.`,
+        text: `🚀 Đã khởi động bot tự động đăng tải lên ${enabledCount} nền tảng! Xem nhật ký trực tiếp bên dưới.`,
       });
     } catch (err) {
       console.error('Publish error:', err);
@@ -156,36 +223,42 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-[#0A0D14] bg-ambient-glow text-slate-100 flex flex-col font-sans selection:bg-indigo-500/30">
       {/* Top Header */}
       <AccountStatusHeader />
 
       {/* Main Studio Split-Screen Layout */}
-      <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 sm:p-6 pb-28">
-        {publishMessage && (
-          <div
-            className={`mb-6 p-4 rounded-xl border flex items-center justify-between gap-3 text-sm transition-all ${
-              publishMessage.type === 'success'
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              {publishMessage.type === 'success' ? (
-                <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
-              ) : (
-                <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
-              )}
-              <span>{publishMessage.text}</span>
-            </div>
-            <button
-              onClick={() => setPublishMessage(null)}
-              className="text-xs hover:underline opacity-80"
+      <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 sm:p-6 pb-32">
+        {/* Floating Notification */}
+        <AnimatePresence>
+          {publishMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95 }}
+              className={`mb-6 p-4 rounded-2xl border flex items-center justify-between gap-3 text-sm shadow-xl backdrop-blur-xl ${
+                publishMessage.type === 'success'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}
             >
-              Đóng
-            </button>
-          </div>
-        )}
+              <div className="flex items-center gap-2.5">
+                {publishMessage.type === 'success' ? (
+                  <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
+                )}
+                <span className="font-medium">{publishMessage.text}</span>
+              </div>
+              <button
+                onClick={() => setPublishMessage(null)}
+                className="text-xs hover:underline opacity-80 cursor-pointer px-2 py-1 rounded hover:bg-white/5"
+              >
+                Đóng
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left Column (40% width): Video Upload + AI Generator */}
@@ -196,17 +269,64 @@ export default function App() {
 
           {/* Right Column (60% width): Platform Cards */}
           <div className="lg:col-span-7 space-y-4">
-            <div className="flex items-center justify-between px-1">
-              <h2 className="text-base font-semibold text-white">
-                Cấu Hình Nội Dung Đăng Tải
-              </h2>
-              <span className="text-xs text-slate-400">
-                Đã kích hoạt:{' '}
-                <strong className="text-indigo-400 font-mono">{enabledCount} / 4</strong> nền tảng
-              </span>
+            {/* Usability Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-900/60 backdrop-blur-md rounded-2xl border border-slate-800/80">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-white tracking-wide">
+                  Cấu Hình 4 Nền Tảng
+                </span>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-semibold">
+                  {enabledCount} / 4 hoạt động
+                </span>
+              </div>
+
+              {/* Quick Actions */}
+              <div className="flex items-center gap-1.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => handleSelectAll(enabledCount < 4)}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800/70 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/50 flex items-center gap-1 transition-all"
+                  title="Bật hoặc tắt tất cả nền tảng"
+                >
+                  {enabledCount === 4 ? (
+                    <>
+                      <Square className="w-3.5 h-3.5" />
+                      <span>Bỏ chọn</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckSquare className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Chọn hết</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSyncCaptions}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800/70 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/50 flex items-center gap-1 transition-all"
+                  title="Sao chép nội dung sang tất cả nền tảng"
+                >
+                  <Copy className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Đồng bộ text</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleClearAllCaptions}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800/70 hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-slate-700/50 transition-all"
+                  title="Xóa nhanh nội dung"
+                >
+                  <span>Xóa hết</span>
+                </button>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Platform Cards Grid with Framer Motion Stagger */}
+            <motion.div 
+              layout
+              className="grid grid-cols-1 md:grid-cols-2 gap-4"
+            >
               {PLATFORMS_META.map((plat) => (
                 <PlatformCard
                   key={plat.id}
@@ -215,42 +335,51 @@ export default function App() {
                   onChange={(newConf) => handlePlatformChange(plat.id, newConf)}
                 />
               ))}
-            </div>
+            </motion.div>
           </div>
         </div>
       </main>
 
-      {/* Sticky Bottom Action Bar */}
-      <div className="fixed bottom-10 left-0 right-0 z-40 bg-slate-900/90 backdrop-blur-md border-t border-slate-800 px-6 py-3">
-        <div className="max-w-[1600px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="text-xs text-slate-400 flex items-center gap-2">
-            <span
-              className={`w-2.5 h-2.5 rounded-full ${video ? 'bg-emerald-400' : 'bg-amber-400'}`}
-            />
-            {video
-              ? `Video sẵn sàng: ${video.filename}`
-              : 'Chưa chọn video tải lên'}
-          </div>
+      {/* Floating Modern Action Dock */}
+      <motion.div 
+        initial={{ y: 50, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.2, type: 'spring', stiffness: 300 }}
+        className="fixed bottom-10 left-0 right-0 z-40 px-4 sm:px-6 pointer-events-none"
+      >
+        <div className="max-w-[1600px] mx-auto flex justify-end pointer-events-auto">
+          <div className="bg-slate-900/95 backdrop-blur-2xl border border-slate-700/70 rounded-2xl p-2.5 shadow-2xl flex flex-col sm:flex-row items-center gap-3">
+            <div className="text-xs text-slate-300 px-3 flex items-center gap-2">
+              <span
+                className={`w-2.5 h-2.5 rounded-full ${video ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}
+              />
+              <span className="max-w-[200px] truncate font-medium">
+                {video ? video.filename : 'Chưa tải video lên'}
+              </span>
+            </div>
 
-          <button
-            onClick={handlePublish}
-            disabled={publishing || !video || enabledCount === 0}
-            className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-purple-600 to-pink-600 hover:from-indigo-600 hover:via-purple-700 hover:to-pink-700 text-white font-semibold text-sm flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          >
-            {publishing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Đang gửi tiến trình đăng...</span>
-              </>
-            ) : (
-              <>
-                <Send className="w-4 h-4" />
-                <span>🚀 Đăng Lên Tất Cả Nền Tảng Đã Chọn ({enabledCount})</span>
-              </>
-            )}
-          </button>
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={handlePublish}
+              disabled={publishing || !video || enabledCount === 0}
+              className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-purple-600 to-pink-500 hover:from-indigo-600 hover:via-purple-700 hover:to-pink-600 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+            >
+              {publishing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Đang gửi tiến trình đăng bài...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  <span>🚀 Đăng Lên Tất Cả Nền Tảng Đã Chọn ({enabledCount})</span>
+                </>
+              )}
+            </motion.button>
+          </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Real-time WebSocket Logs Drawer */}
       <LiveLogsDrawer />
